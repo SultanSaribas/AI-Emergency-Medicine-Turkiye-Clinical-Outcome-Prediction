@@ -161,6 +161,17 @@ def _predict_single(features: dict) -> dict:
 
     X = em.make_feature_matrix(row)
 
+    # align columns to the training schema — fill any missing columns with NaN
+    first_pipeline = next(iter(models.values()))
+    preprocessor = first_pipeline.named_steps["preprocess"]
+    expected_cols = (
+        list(preprocessor.transformers_[0][2]) +
+        list(preprocessor.transformers_[1][2])
+    )
+    for col in expected_cols:
+        if col not in X.columns:
+            X[col] = np.nan
+
     probs = {}
     for target, pipeline in models.items():
         if hasattr(pipeline, "predict_proba"):
