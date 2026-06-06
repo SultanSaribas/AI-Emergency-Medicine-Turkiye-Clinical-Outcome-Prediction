@@ -6,6 +6,21 @@ from typing import Any, Iterable, Sequence
 
 import numpy as np
 import pandas as pd
+from sklearn.compose import ColumnTransformer
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.impute import SimpleImputer
+from sklearn.linear_model import SGDClassifier
+from sklearn.metrics import (
+    accuracy_score,
+    average_precision_score,
+    confusion_matrix,
+    f1_score,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+)
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 
 TARGET_COLS = ["adverse_outcome", "readmission_30d"]
@@ -214,78 +229,19 @@ def separate_feature_types(X: pd.DataFrame) -> tuple[list[str], list[str]]:
     return numeric_features, categorical_features
 
 
-def _require_sklearn() -> dict[str, Any]:
-    try:
-        from sklearn.base import BaseEstimator
-        from sklearn.compose import ColumnTransformer
-        from sklearn.impute import SimpleImputer
-        from sklearn.linear_model import SGDClassifier
-        from sklearn.metrics import (
-            accuracy_score,
-            average_precision_score,
-            confusion_matrix,
-            f1_score,
-            precision_score,
-            recall_score,
-            roc_auc_score,
-        )
-        from sklearn.pipeline import Pipeline
-        from sklearn.preprocessing import OneHotEncoder, StandardScaler
-    except ModuleNotFoundError as exc:
-        if exc.name == "sklearn":
-            raise ModuleNotFoundError(
-                "scikit-learn is required for the baseline modeling cells. "
-                "Install it in this notebook kernel with: %pip install scikit-learn"
-            ) from exc
-        raise
 
-    return {
-        "BaseEstimator": BaseEstimator,
-        "ColumnTransformer": ColumnTransformer,
-        "SimpleImputer": SimpleImputer,
-        "SGDClassifier": SGDClassifier,
-        "accuracy_score": accuracy_score,
-        "average_precision_score": average_precision_score,
-        "confusion_matrix": confusion_matrix,
-        "f1_score": f1_score,
-        "precision_score": precision_score,
-        "recall_score": recall_score,
-        "roc_auc_score": roc_auc_score,
-        "Pipeline": Pipeline,
-        "OneHotEncoder": OneHotEncoder,
-        "StandardScaler": StandardScaler,
-    }
-
-
-def _one_hot_encoder(min_frequency: int | float | None = 50) -> Any:
-    sklearn = _require_sklearn()
-    OneHotEncoder = sklearn["OneHotEncoder"]
-
-    kwargs = {"handle_unknown": "ignore"}
+def _one_hot_encoder(min_frequency: int | float | None = 50) -> OneHotEncoder:
+    kwargs: dict[str, Any] = {"handle_unknown": "ignore", "sparse_output": True}
     if min_frequency is not None:
         kwargs["min_frequency"] = min_frequency
-
-    try:
-        return OneHotEncoder(**kwargs, sparse_output=True)
-    except TypeError:
-        try:
-            return OneHotEncoder(**kwargs, sparse=True)
-        except TypeError:
-            kwargs.pop("min_frequency", None)
-            return OneHotEncoder(**kwargs, sparse=True)
+    return OneHotEncoder(**kwargs)
 
 
 def build_preprocessor(
     numeric_features: Sequence[str],
     categorical_features: Sequence[str],
     min_category_frequency: int | float | None = 50,
-) -> Any:
-    sklearn = _require_sklearn()
-    ColumnTransformer = sklearn["ColumnTransformer"]
-    Pipeline = sklearn["Pipeline"]
-    SimpleImputer = sklearn["SimpleImputer"]
-    StandardScaler = sklearn["StandardScaler"]
-
+) -> ColumnTransformer:
     numeric_pipe = Pipeline(
         steps=[
             ("imputer", SimpleImputer(strategy="median")),
@@ -308,35 +264,6 @@ def build_preprocessor(
     )
 
 
-def build_baseline_pipeline(
-    numeric_features: Sequence[str],
-    categorical_features: Sequence[str],
-    random_state: int = 42,
-    min_category_frequency: int | float | None = 50,
-) -> Any:
-    sklearn = _require_sklearn()
-    Pipeline = sklearn["Pipeline"]
-    SGDClassifier = sklearn["SGDClassifier"]
-
-    preprocessor = build_preprocessor(
-        numeric_features=numeric_features,
-        categorical_features=categorical_features,
-        min_category_frequency=min_category_frequency,
-    )
-    model = SGDClassifier(
-        loss="log_loss",
-        penalty="elasticnet",
-        alpha=1e-5,
-        l1_ratio=0.05,
-        class_weight="balanced",
-        max_iter=1000,
-        tol=1e-3,
-        random_state=random_state,
-        n_jobs=-1,
-    )
-    return Pipeline(steps=[("preprocess", preprocessor), ("model", model)])
-
-
 def _positive_class_scores(model: Any, X: pd.DataFrame) -> np.ndarray:
     if hasattr(model, "predict_proba"):
         return model.predict_proba(X)[:, 1]
@@ -351,15 +278,6 @@ def evaluate_binary_model(
     y_valid: pd.Series,
     threshold: float = 0.5,
 ) -> tuple[pd.Series, pd.DataFrame]:
-    sklearn = _require_sklearn()
-    roc_auc_score = sklearn["roc_auc_score"]
-    average_precision_score = sklearn["average_precision_score"]
-    accuracy_score = sklearn["accuracy_score"]
-    precision_score = sklearn["precision_score"]
-    recall_score = sklearn["recall_score"]
-    f1_score = sklearn["f1_score"]
-    confusion_matrix = sklearn["confusion_matrix"]
-
     y_score = _positive_class_scores(model, X_valid)
     y_pred = (y_score >= threshold).astype("int8")
 
@@ -432,7 +350,8 @@ def run_baseline_for_target(
     )
 
     numeric_features, categorical_features = separate_feature_types(X_train)
-    model = build_baseline_pipeline(
+    model = build_pipeline_for_model(
+        model_type="sgd",
         numeric_features=numeric_features,
         categorical_features=categorical_features,
         random_state=random_state,
@@ -479,71 +398,110 @@ def run_all_baselines(
     }
 
 
-def fit_full_model_for_target(
-    df: pd.DataFrame,
-    target: str,
+def build_pipeline_for_model(
+    model_type: str,
+    numeric_features: Sequence[str],
+    categorical_features: Sequence[str],
     random_state: int = 42,
     min_category_frequency: int | float | None = 50,
-    leakage_cols: Sequence[str] = LEAKAGE_COLS,
-    id_cols: Sequence[str] = ID_COLS,
 ) -> Pipeline:
-    X, y = make_feature_target(
-        df,
-        target=target,
-        leakage_cols=leakage_cols,
-        id_cols=id_cols,
-    )
-    numeric_features, categorical_features = separate_feature_types(X)
-    model = build_baseline_pipeline(
+    preprocessor = build_preprocessor(
         numeric_features=numeric_features,
         categorical_features=categorical_features,
-        random_state=random_state,
         min_category_frequency=min_category_frequency,
     )
-    model.fit(X, y)
-    return model
+
+    model_type = model_type.lower()
+    if model_type == "sgd":
+        estimator = SGDClassifier(
+            loss="log_loss",
+            penalty="elasticnet",
+            alpha=1e-5,
+            l1_ratio=0.05,
+            class_weight="balanced",
+            max_iter=1000,
+            tol=1e-3,
+            random_state=random_state,
+            n_jobs=-1,
+        )
+    elif model_type == "random_forest":
+        estimator = RandomForestClassifier(
+            n_estimators=300,
+            max_depth=None,
+            min_samples_leaf=4,
+            class_weight="balanced",
+            random_state=random_state,
+            n_jobs=-1,
+        )
+    elif model_type == "xgboost":
+        try:
+            from xgboost import XGBClassifier
+        except ImportError as exc:
+            raise ImportError(
+                "xgboost is required. Install with: pip install xgboost"
+            ) from exc
+        estimator = XGBClassifier(
+            n_estimators=500,
+            max_depth=6,
+            learning_rate=0.05,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            eval_metric="auc",
+            random_state=random_state,
+            n_jobs=-1,
+            verbosity=0,
+        )
+    elif model_type == "lightgbm":
+        try:
+            from lightgbm import LGBMClassifier
+        except ImportError as exc:
+            raise ImportError(
+                "lightgbm is required. Install with: pip install lightgbm"
+            ) from exc
+        estimator = LGBMClassifier(
+            n_estimators=500,
+            max_depth=-1,
+            learning_rate=0.05,
+            num_leaves=63,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            class_weight="balanced",
+            random_state=random_state,
+            n_jobs=-1,
+            verbose=-1,
+        )
+    else:
+        raise ValueError(
+            f"Unknown model_type '{model_type}'. "
+            "Choose from: 'sgd', 'random_forest', 'xgboost', 'lightgbm'."
+        )
+
+    return Pipeline(steps=[("preprocess", preprocessor), ("model", estimator)])
 
 
-def fit_full_models(
+def fit_full_models_for_type(
     df: pd.DataFrame,
+    model_type: str,
     targets: Sequence[str] = TARGET_COLS,
     random_state: int = 42,
     min_category_frequency: int | float | None = 50,
     leakage_cols: Sequence[str] = LEAKAGE_COLS,
     id_cols: Sequence[str] = ID_COLS,
 ) -> dict[str, Pipeline]:
-    return {
-        target: fit_full_model_for_target(
-            df=df,
-            target=target,
+    trained = {}
+    for target in targets:
+        X, y = make_feature_target(df, target=target, leakage_cols=leakage_cols, id_cols=id_cols)
+        numeric_features, categorical_features = separate_feature_types(X)
+        pipeline = build_pipeline_for_model(
+            model_type=model_type,
+            numeric_features=numeric_features,
+            categorical_features=categorical_features,
             random_state=random_state,
             min_category_frequency=min_category_frequency,
-            leakage_cols=leakage_cols,
-            id_cols=id_cols,
         )
-        for target in targets
-    }
-
-
-def predict_test_scores(
-    models: dict[str, Pipeline],
-    test_df: pd.DataFrame,
-    threshold: float | None = None,
-) -> pd.DataFrame:
-    if not ID_COLS or ID_COLS[0] not in test_df.columns:
-        raise ValueError(f"Test data must contain id column: {ID_COLS[0]}")
-
-    X_test = make_feature_matrix(test_df)
-    predictions = pd.DataFrame({ID_COLS[0]: test_df[ID_COLS[0]].values})
-
-    for target, model in models.items():
-        scores = _positive_class_scores(model, X_test)
-        if threshold is None:
-            predictions[target] = scores
-        else:
-            predictions[target] = (scores >= threshold).astype("int8")
-
-    return predictions
+        pipeline.fit(X, y)
+        trained[target] = pipeline
+    return trained
 
 
 def make_submission(
@@ -556,7 +514,15 @@ def make_submission(
     sample = pd.read_csv(sample_submission_path)
     id_col = ID_COLS[0]
 
-    predictions = predict_test_scores(models, test_df, threshold=threshold)
+    if id_col not in test_df.columns:
+        raise ValueError(f"Test data must contain id column: {id_col}")
+
+    X_test = make_feature_matrix(test_df)
+    predictions = pd.DataFrame({id_col: test_df[id_col].values})
+    for target, model in models.items():
+        scores = _positive_class_scores(model, X_test)
+        predictions[target] = scores if threshold is None else (scores >= threshold).astype("int8")
+
     submission = sample[[id_col]].merge(predictions, on=id_col, how="left")
 
     target_cols = [col for col in sample.columns if col != id_col]
