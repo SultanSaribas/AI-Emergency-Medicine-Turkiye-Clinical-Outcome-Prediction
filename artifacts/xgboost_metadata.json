@@ -1,0 +1,10 @@
+{
+    "model_type": "xgboost",
+    "targets": [
+        "adverse_outcome",
+        "readmission_30d"
+    ],
+    "created_at": "2026-06-07T01:21:29.221268",
+    "random_state": 42,
+    "note": "Saved XGBoost pipelines for adverse_outcome and readmission_30d prediction."
+}
