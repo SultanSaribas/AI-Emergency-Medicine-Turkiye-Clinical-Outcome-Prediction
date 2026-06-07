@@ -15,7 +15,7 @@ import emergency_ml_pipeline as em
 ARTIFACT_DIR = Path(__file__).parent / "artifacts"
 
 
-@st.cache_resource(show_spinner="Model yükleniyor…")
+@st.cache_resource(show_spinner="Loading model…")
 def _load_models() -> tuple[dict, dict]:
     models = joblib.load(ARTIFACT_DIR / "xgboost_models.joblib")
     with open(ARTIFACT_DIR / "xgboost_metadata.json") as f:
@@ -91,7 +91,7 @@ class EmergencyPredictionApp:
         _, metadata = _load_models()
         with st.sidebar:
             st.header("Model Info")
-            st.success("Model yüklendi")
+            st.success("Model loaded")
             st.caption(f"Model: {metadata.get('model_type', '-')}")
             st.caption(f"Created: {str(metadata.get('created_at', ''))[:10]}")
 
@@ -224,12 +224,12 @@ class EmergencyPredictionApp:
             )
 
         if submitted:
-            with st.spinner("Tahmin hesaplanıyor…"):
+            with st.spinner("Running prediction..."):
                 try:
                     result = _predict_single(patient)
                     self._show_results(result)
                 except Exception as exc:
-                    st.error(f"Tahmin hatası: {exc}")
+                    st.error(f"Prediction error: {exc}")
 
 
 if __name__ == "__main__":
