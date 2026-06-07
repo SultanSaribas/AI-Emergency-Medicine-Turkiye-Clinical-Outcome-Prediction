@@ -1,13 +1,54 @@
 from __future__ import annotations
 
-import os
+import json
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Optional
 
-import requests
+import joblib
+import numpy as np
+import pandas as pd
 import streamlit as st
 
-API_BASE_URL = os.environ.get("API_BASE_URL", "http://127.0.0.1:8000")
+import emergency_ml_pipeline as em
+
+ARTIFACT_DIR = Path(__file__).parent / "artifacts"
+
+
+@st.cache_resource(show_spinner="Model yükleniyor…")
+def _load_models() -> tuple[dict, dict]:
+    models = joblib.load(ARTIFACT_DIR / "xgboost_models.joblib")
+    with open(ARTIFACT_DIR / "xgboost_metadata.json") as f:
+        metadata = json.load(f)
+    return models, metadata
+
+
+def _predict_single(patient: "PatientData") -> dict:
+    models, _ = _load_models()
+    features = {k: v for k, v in asdict(patient).items() if v is not None}
+    row = pd.DataFrame([features])
+    X = em.make_feature_matrix(row)
+    first_pipeline = next(iter(models.values()))
+    preprocessor = first_pipeline.named_steps["preprocess"]
+    expected_cols = (
+        list(preprocessor.transformers_[0][2])
+        + list(preprocessor.transformers_[1][2])
+    )
+    for col in expected_cols:
+        if col not in X.columns:
+            X[col] = np.nan
+    probs: dict = {}
+    for target, pipeline in models.items():
+        if hasattr(pipeline, "predict_proba"):
+            prob = pipeline.predict_proba(X)[0, 1]
+        else:
+            score = pipeline.decision_function(X)[0]
+            prob = float(1 / (1 + np.exp(-score)))
+        probs[target] = round(float(prob), 6)
+    return {
+        "adverse_outcome_prob": probs.get("adverse_outcome", 0.0),
+        "readmission_30d_prob": probs.get("readmission_30d", 0.0),
+    }
 
 
 @dataclass
@@ -42,37 +83,17 @@ class PatientData:
     comorbidity_ckd: Optional[int] = None
 
 
-class APIClient:
-    def __init__(self, base_url: str = API_BASE_URL):
-        self.base_url = base_url.rstrip("/")
-
-    def health(self) -> dict:
-        r = requests.get(f"{self.base_url}/health", timeout=5)
-        r.raise_for_status()
-        return r.json()
-
-    def predict(self, patient: PatientData) -> dict:
-        payload = {k: v for k, v in asdict(patient).items() if v is not None}
-        r = requests.post(f"{self.base_url}/predict", json=payload, timeout=10)
-        r.raise_for_status()
-        return r.json()
-
-
 class EmergencyPredictionApp:
-    def __init__(self, client: APIClient):
-        self.client = client
+    def __init__(self) -> None:
+        pass
 
     def _render_sidebar(self) -> None:
+        _, metadata = _load_models()
         with st.sidebar:
-            st.header("API Status")
-            try:
-                info = self.client.health()
-                st.success("Connected")
-                st.caption(f"Model: {info.get('model_type', '-')}")
-                st.caption(f"Created: {str(info.get('created_at', ''))[:10]}")
-            except Exception:
-                st.error("API unreachable")
-                st.caption(f"Expected at: {self.client.base_url}")
+            st.header("Model Info")
+            st.success("Model yüklendi")
+            st.caption(f"Model: {metadata.get('model_type', '-')}")
+            st.caption(f"Created: {str(metadata.get('created_at', ''))[:10]}")
 
     def _build_patient(self) -> PatientData:
         t_demo, t_triage, t_vitals, t_labs, t_comorbid = st.tabs(
@@ -203,18 +224,13 @@ class EmergencyPredictionApp:
             )
 
         if submitted:
-            with st.spinner("Running prediction..."):
+            with st.spinner("Tahmin hesaplanıyor…"):
                 try:
-                    result = self.client.predict(patient)
+                    result = _predict_single(patient)
                     self._show_results(result)
-                except requests.ConnectionError:
-                    st.error(
-                        "Cannot connect to API. "
-                        "Start it with: uvicorn app:app --reload"
-                    )
-                except requests.HTTPError as e:
-                    st.error(f"API error {e.response.status_code}: {e.response.text}")
+                except Exception as exc:
+                    st.error(f"Tahmin hatası: {exc}")
 
 
 if __name__ == "__main__":
-    EmergencyPredictionApp(APIClient()).run()
+    EmergencyPredictionApp().run()
