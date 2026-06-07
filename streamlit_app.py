@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import os
 from dataclasses import asdict, dataclass
 from typing import Optional
 
 import requests
 import streamlit as st
 
-API_BASE_URL = "http://127.0.0.1:8000"
+API_BASE_URL = os.environ.get("API_BASE_URL", "http://127.0.0.1:8000")
 
 
 @dataclass
